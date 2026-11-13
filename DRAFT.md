@@ -1,127 +1,122 @@
 # DRAFT - ojuny-minimal-installer
 
-Status: draft scope. Nothing is built. This file describes what the repository
-is supposed to contain, not what it contains today.
+Status: implemented 2026-11-12. The ISO builds, `nix flake check` passes and the
+engine is covered by the layout and settings checks. No hardware install has
+been completed; the QEMU install run is written but not part of the build.
 
 ## Purpose
 
 The reference terminal installer for Ojuny templates. It installs any template
-that can be installed, booted and run, and it is the base that the Pro, Console
-and Home Server installers extend.
+that can be installed, booted and run, from a console-only live ISO with no
+desktop environment and no Calamares.
 
-It replaces the graphical installer path with a terminal interface. The install
-engine is shared and scriptable so the same code can run attended, unattended,
-offline and from a discovery cache.
+It is the companion to `ojuny-minimal-template`, which states that the installer
+implementation lives here, and the terminal counterpart of `ojuny-installer`,
+which is the Calamares and offline path.
 
 ## Position in the project
 
-`ojuny-installer` is the Calamares path for the full desktop template. This
-repository is the terminal path and the reference implementation of "install
-an arbitrary Ojuny template". The other installers may reuse its engine or its
-image definitions, but they do not fork the install logic.
+| Repository | Role |
+| --- | --- |
+| `ojuny-template` | Full desktop template. Defines the module contract. |
+| `ojuny-minimal-template` | Smallest valid template. The bundled install source. |
+| `ojuny-installer` | Calamares installer with discovery and offline variants. |
+| `ojuny-minimal-installer` | This repository. TTY installer, one online ISO. |
 
-## What the repository will contain
+This repository does not fork the template and does not duplicate its install
+logic into the template.
+
+## What the repository contains
 
 ```text
 ojuny-minimal-installer/
-  flake.nix                 ISO and app outputs
-  nixos/                    live ISO profiles
-    installer.nix           base live system
-    offline.nix             full-system closure
-    discovery.nix           nix-cache-discovery profile
-    unattended.nix          automatic install
-  installer/                terminal UI and install engine
-    preflight/              requirements and target checks
-    disk/                   partitioning, LUKS, mount layout
-    template/               fetch, validate and inject a template
-    system/                 users, hostname, network, bootloader
-    report/                 progress and error handling
-  docs/                     screen flow, unattended schema, tests
-  tests/                    VM and hardware checklists
+  flake.nix                   ISO, installer app, checks, dev shell
+  nixos/
+    iso.nix                   minimal live ISO and the tty1 service
+    common.nix                live packages, /etc/ojuny paths, template source
+    eject.nix                 remove-the-medium prompt
+    test.nix                  scripted test fixture, not a product variant
+  installer/
+    default.nix               the ojuny-install package
+    oj_installer/
+      main.py                 entry point and screen state machine
+      tui.py                  curses primitives
+      screens.py              welcome, template, origin, system, disk, summary
+      preflight.py            machine and disk discovery
+      settings.py             the settings record and validation
+      disk.py                 layout planner, partitioning, mounting
+      hardware.py             hardware, facter, LUKS lines, bootloader
+      template.py             acquire, inject, git
+      install.py              the seven engine phases
+      postinstall.py          flake copy, ownership, log, report
+      paths.py                every fixed path and constant
+      flake_structure.py      byte-identical copy of the template parser
+  docs/                       screen flow, engine, disk layout, limits, testing
+  tests/                      layout, settings and fixed-path checks
+  scripts/qemu-test.sh        install and boot check in QEMU
 ```
 
 ### Flake outputs
 
-- `packages.ojuny-iso`: attended online ISO.
-- `packages.ojuny-iso-offline`: attended offline ISO.
-- `packages.ojuny-iso-discovery`: attended discovery ISO.
-- `packages.unattended-iso`, `unattended-iso-offline`,
-  `unattended-iso-discovery`.
-- `apps.install`: run the terminal installer from an existing NixOS system.
-- `apps.make-iso`: build an ISO for a chosen template and variant.
-- `apps.make-unattended-iso`: build an unattended ISO with a config file.
-- `checks.*`: VM boot and install checks.
+- `packages.ojuny-minimal-iso`: the live ISO.
+- `packages.ojuny-minimal-iso-test`: the scripted fixture ISO for the QEMU test.
+- `packages.ojuny-install`, `apps.install`: the installer for an existing NixOS.
+- `apps.ci`, `devShells.default`, `checks.*`.
+- `nixosConfigurations.ojuny-minimal-iso`.
 
 ### Install engine
 
-- Preflight: architecture, RAM, disk size, network, UEFI or BIOS, Nix features.
-- Template selection: git URL, flake reference or local path; the repository is
-  cloned or copied to the target.
-- Template validation: the flake has a `nixosConfigurations` output, the setup
-  generators can run, the target builds, and the installed system boots.
-- Injection: write the hardware module, the user module and the host
-  registration. Never edit the template's hand-written pages.
-- Disk layout: manual selection or disko-driven automatic layout, optional
-  LUKS2 root, swap policy, ESP or XBOOTLDR handling.
-- System install: `nixos-install --flake`, bootloader, first-boot wiring.
-- Completion: print the installed path and the next command, then offer reboot.
+Seven phases: check the target, prepare the template, partition and format,
+generate hardware, `nixos-install`, finish the configuration, unmount. Details
+are in `docs/install-engine.md`. The template is acquired before the disk is
+written, so a bad URL fails without destroying data.
 
 ### Terminal interface
 
-- Full-screen TUI with keyboard navigation and no graphical dependencies.
-- Screens for template, disk, encryption, user, hostname, network, summary and
-  progress.
-- A non-interactive mode driven by a config file for unattended installs.
-- A readable log and a final summary that can be copied for support.
-- Controller or serial operation for headless machines.
-
-### Image variants
-
-- Attended online: fetch the template and build on the target.
-- Attended offline: carry the template closure and locked inputs.
-- Attended discovery: use `nix-cache-discovery` peers on the local network.
-- Unattended versions of all three, with the same destructive disk policy.
+Full-screen TUI in the tty. Standard library curses, no Qt, no Wayland, no
+extra toolkit. Nine screens, keyboard only. Details are in
+`docs/screen-flow.md`.
 
 ### Documentation
 
-- The TUI screen flow and key map.
-- The unattended config schema and defaults.
-- What makes a template installable and bootable, and how the installer checks
-  it.
-- Disk layouts, firmware handling and encryption limits.
-- How to add a product variant without forking the engine.
+- The screen flow and key map.
+- The engine phases and the template module contract.
+- The sector layout and filesystem handling.
+- The limits, including what the minimal installer deliberately does not do.
+- The static checks and the QEMU procedure.
 
-### Tests
+## Decisions
 
-- Boot each ISO in QEMU and reach the first screen.
-- Install `ojuny-minimal-template` and boot the installed system.
-- Install a second template with a different desktop to prove neutrality.
-- Install offline with the network disabled.
-- Reject a template that cannot be installed or does not boot.
-- Verify that an existing disk is never overwritten without confirmation.
+1. Engine and TUI are Python 3 with the standard library only.
+2. The ISO base is `installation-cd-minimal.nix`; the desktop, Calamares, Qt,
+   plymouth and the debug SSH probe are not imported.
+3. Disks are planned on sectors: whole-disk erase or the largest free region of
+   at least 30 GiB. The installer never shrinks a filesystem.
+4. Templates are either bundled (the ISO's `ojuny-minimal-template` input, the
+   default) or prepared (a git URL with an optional token and branch).
+5. Template helpers (`prepare-repo`, `regenerate-hardware`, `ojuny-bootorder`)
+   are used when the bundled input provides them. The generic path always
+   exists, because `ojuny-minimal-template` ships none of them.
+6. There is no persistent image, unattended product variant, discovery cache or
+   offline closure.
 
 ## Limits and non-goals
 
-- `x86_64-linux` only.
-- Destructive unattended installs. The target disk is wiped by design.
-- No Wi-Fi configuration in the unattended path.
-- No NTFS resizing. Windows must be prepared before install.
-- No Secure Boot key enrollment. It remains a post-install step.
-- No product-specific defaults. Those live in the product installers.
-- No graphical installer. That remains `ojuny-installer`.
+See `docs/limits.md` for the full list. The short version: `x86_64-linux`,
+online only, erase or free space, LUKS2 root only, no secure boot, no Wi-Fi.
 
 ## Open questions
 
-- Is the engine a shell library, a Rust binary, or a Nix-generated script?
-- Which terminal UI library is acceptable on the live image?
-- Does the minimal installer need the persistent USB image path, or is that
-  only in the full installer?
-- Should an installability check be a hard failure or a warning?
+- Is a swap-with-hibernate option worth the resume wiring?
+- Should the installer offer to keep an existing ESP instead of always creating
+  a 4 GiB one?
+- Should prepared installs be able to inject the account from the System screen
+  instead of keeping the repository's own user?
 
 ## Sources
 
-- `ojuny-installer/README.md` and `docs/unattended-install.md`,
-  `docs/offline-install.md`, `docs/remote-deployment.md`,
-  `docs/persistent-image.md`.
-- `ojuny-template/docs/03-host-setup.md`.
-- `nixos-configs/notes/Ojuny Deployment Methods.md`.
+- `ojuny-template/docs/12-flake-module-contract.md`, `03-host-setup.md`.
+- `ojuny-minimal-template/DRAFT.md`, `README.md`.
+- `ojuny-installer/README.md`, `docs/attended-install.md`,
+  `docs/unattended-install.md`, `nixos/unattended-install.py`,
+  `packages/ojuny-calamares-extensions/modules/ojuny/main.py`.

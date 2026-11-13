@@ -7,3 +7,7 @@ result-*
 
 # Ignore NixOS interactive test driver history
 **/.nixos-test-history
+
+# Ignore Python bytecode
+__pycache__/
+*.pyc
