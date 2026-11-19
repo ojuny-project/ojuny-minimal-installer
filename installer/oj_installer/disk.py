@@ -7,6 +7,7 @@ run it without a disk.
 import os
 import stat
 import subprocess
+import time
 
 from . import paths, preflight
 
@@ -26,17 +27,21 @@ class DiskError(Exception):
 
 
 def run(command, input_text=None):
+    print("+ " + " ".join(str(part) for part in command), flush=True)
     result = subprocess.run(
         command,
         input=input_text,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         text=True,
     )
     if result.returncode != 0:
         raise DiskError(
-            "command failed ({}): {}\n{}".format(
-                result.returncode, " ".join(str(part) for part in command), result.stdout
+            "command failed ({}): {}\n{}{}".format(
+                result.returncode,
+                " ".join(str(part) for part in command),
+                result.stdout,
+                result.stderr,
             )
         )
     return result.stdout
@@ -211,6 +216,13 @@ def format_root(device, filesystem):
         raise DiskError("unknown filesystem: {}".format(filesystem))
 
 
+def blkid(device):
+    try:
+        return preflight.output(["blkid", "-o", "value", "-s", "TYPE", device]) or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 def open_root(device, settings):
     if not settings.encrypt:
         return device
@@ -225,6 +237,14 @@ def open_root(device, settings):
     return "/dev/mapper/" + paths.LUKS_NAME
 
 
+def wait_for_device(device, attempts=50):
+    for _ in range(attempts):
+        if os.path.exists(device):
+            return
+        time.sleep(0.2)
+    raise DiskError("device did not appear: {}".format(device))
+
+
 def format_and_mount(disk, layout, numbers, settings):
     root_part = layout[-1]
     root_device = partition_path(disk, numbers[root_part["role"]])
@@ -232,6 +252,9 @@ def format_and_mount(disk, layout, numbers, settings):
     swap_device = (
         partition_path(disk, numbers[ROLE_SWAP]) if ROLE_SWAP in numbers else None
     )
+
+    for device in (esp_device, root_device):
+        wait_for_device(device)
 
     run(["mkfs.vfat", "-F", "32", "-n", "OJUNY_ESP", esp_device])
     if swap_device:
@@ -245,22 +268,26 @@ def format_and_mount(disk, layout, numbers, settings):
     settings.extras["esp_device"] = esp_device
     settings.extras["swap_device"] = swap_device
 
+    for device in (esp_device, root):
+        print("blkid {}: {}".format(device, blkid(device)), flush=True)
+
+    subprocess.run(["sync"], check=False)
     os.makedirs(paths.TARGET, exist_ok=True)
     if settings.filesystem == "btrfs":
-        run(["mount", root, str(paths.TARGET)])
+        run(["mount", "-t", "btrfs", root, str(paths.TARGET)])
         for name in ("@", "@home", "@nix"):
             run(["btrfs", "subvolume", "create", os.path.join(str(paths.TARGET), name)])
         run(["umount", str(paths.TARGET)])
-        run(["mount", "-o", "subvol=@", root, str(paths.TARGET)])
+        run(["mount", "-t", "btrfs", "-o", "subvol=@", root, str(paths.TARGET)])
         os.makedirs(paths.TARGET / "home", exist_ok=True)
         os.makedirs(paths.TARGET / "nix", exist_ok=True)
-        run(["mount", "-o", "subvol=@home", root, str(paths.TARGET / "home")])
-        run(["mount", "-o", "subvol=@nix", root, str(paths.TARGET / "nix")])
+        run(["mount", "-t", "btrfs", "-o", "subvol=@home", root, str(paths.TARGET / "home")])
+        run(["mount", "-t", "btrfs", "-o", "subvol=@nix", root, str(paths.TARGET / "nix")])
     else:
-        run(["mount", root, str(paths.TARGET)])
+        run(["mount", "-t", settings.filesystem, root, str(paths.TARGET)])
 
     os.makedirs(paths.TARGET / "boot", exist_ok=True)
-    run(["mount", esp_device, str(paths.TARGET / "boot")])
+    run(["mount", "-t", "vfat", esp_device, str(paths.TARGET / "boot")])
 
 
 def unmount():

@@ -307,4 +307,3 @@ def prepare(staging, settings, reporter):
             )
 
     template.ensure_imports(staging)
-    return version
